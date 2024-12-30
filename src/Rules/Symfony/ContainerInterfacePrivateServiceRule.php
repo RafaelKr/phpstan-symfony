@@ -10,14 +10,12 @@ use PHPStan\BetterReflection\Reflection\Adapter\ReflectionAttribute;
 use PHPStan\Reflection\ClassReflection;
 use PHPStan\Rules\Rule;
 use PHPStan\Rules\RuleErrorBuilder;
-use PHPStan\Symfony\ServiceDefinition;
 use PHPStan\Symfony\ServiceMap;
 use PHPStan\TrinaryLogic;
 use PHPStan\Type\ObjectType;
 use PHPStan\Type\Type;
 use Symfony\Component\DependencyInjection\Attribute\AutowireLocator;
 use function class_exists;
-use function get_class;
 use function sprintf;
 
 /**
@@ -77,20 +75,16 @@ final class ContainerInterfacePrivateServiceRule implements Rule
 			return [];
 		}
 
-		$service = $this->serviceMap->getService($serviceId);
-		if (!$service instanceof ServiceDefinition) {
-			return [];
-		}
-
 		$isContainerInterfaceType = $isContainerType->yes() || $isPsrContainerType->yes();
 		if (
 			$isContainerInterfaceType &&
-			$this->isAutowireLocator($node, $scope, $service)
+			$this->isAutowireLocator($node, $scope, $serviceId)
 		) {
 			return [];
 		}
 
-		if (!$service->isPublic()) {
+		$service = $this->serviceMap->getService($serviceId);
+		if ($service !== null && !$service->isPublic()) {
 			return [
 				RuleErrorBuilder::message(sprintf('Service "%s" is private.', $serviceId))
 					->identifier('symfonyContainer.privateService')
@@ -113,7 +107,7 @@ final class ContainerInterfacePrivateServiceRule implements Rule
 		return $isContainerServiceSubscriber->or($serviceSubscriberInterfaceType->isSuperTypeOf($containedClassType));
 	}
 
-	private function isAutowireLocator(Node $node, Scope $scope, ServiceDefinition $service): bool
+	private function isAutowireLocator(Node $node, Scope $scope, string $serviceId): bool
 	{
 		if (!class_exists('Symfony\\Component\\DependencyInjection\\Attribute\\AutowireLocator')) {
 			return false;
@@ -149,41 +143,21 @@ final class ContainerInterfacePrivateServiceRule implements Rule
 		$classPropertyReflection = $containerInterfacePropertyReflection->getNativeReflection();
 		$autowireLocatorAttributes = $classPropertyReflection->getAttributes(AutowireLocator::class);
 
-		return $this->isAutowireLocatorService($autowireLocatorAttributes, $service);
+		return $this->isAutowireLocatorService($autowireLocatorAttributes, $serviceId);
 	}
 
 	/**
 	 * @param  array<int, FakeReflectionAttribute|ReflectionAttribute>  $autowireLocatorAttributes
 	 */
-	private function isAutowireLocatorService(array $autowireLocatorAttributes, ServiceDefinition $service): bool
+	private function isAutowireLocatorService(array $autowireLocatorAttributes, string $serviceId): bool
 	{
 		foreach ($autowireLocatorAttributes as $autowireLocatorAttribute) {
-			foreach ($autowireLocatorAttribute->getArgumentsExpressions() as $autowireLocatorServices) {
-				if (!$autowireLocatorServices instanceof Node\Expr\Array_) {
-					continue;
-				}
+			/** @var AutowireLocator $autowireLocatorInstance */
+			$autowireLocator = $autowireLocatorAttribute->newInstance();
+			$autowireLocatorServices = $autowireLocator->value->getValues();
 
-				foreach ($autowireLocatorServices->items as $autowireLocatorServiceNode) {
-					/** @var Node\Expr\ArrayItem $autowireLocatorServiceNode */
-					$autowireLocatorServiceExpr = $autowireLocatorServiceNode->value;
-
-					switch (get_class($autowireLocatorServiceExpr)) {
-						case Node\Scalar\String_::class:
-							$autowireLocatorServiceClass = $autowireLocatorServiceExpr->value;
-							break;
-						case Node\Expr\ClassConstFetch::class:
-							$autowireLocatorServiceClass = $autowireLocatorServiceExpr->class instanceof Node\Name
-								? $autowireLocatorServiceExpr->class->toString()
-								: null;
-							break;
-						default:
-							$autowireLocatorServiceClass = null;
-					}
-
-					if ($service->getId() === $autowireLocatorServiceClass) {
-						return true;
-					}
-				}
+			if (array_key_exists($serviceId, $autowireLocatorServices)) {
+				return true;
 			}
 		}
 
